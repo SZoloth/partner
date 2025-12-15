@@ -112,6 +112,17 @@
 
 ---
 
+## Markdown Viewer/Editor
+
+- [ ] Browse and view `.md` files in TUI
+- [ ] Rendered markdown preview (glamour)
+- [ ] Edit mode with syntax highlighting
+- [ ] Quick open recent files
+- [ ] Integration with Knowledge pane (notes as markdown)
+- [ ] BACKLOG.md / README.md quick access
+
+---
+
 ## Ideas / Someday
 
 - [ ] Vim mode for text input
