@@ -1,0 +1,32 @@
+version: 1
+
+layout:
+  default: single
+  startup_panes:
+    - tasks
+
+panes:
+  tasks:
+    source: things
+    refresh_interval: 30s
+    default_view: today
+
+mcp:
+  things:
+    type: stdio
+    command: npx
+    args: ["-y", "things-mcp"]
+
+theme: catppuccin_mocha
+
+keybindings:
+  global:
+    quit: ["ctrl+c", "q"]
+    focus_next: ["tab"]
+    focus_prev: ["shift+tab"]
+  pane:
+    up: ["k", "up"]
+    down: ["j", "down"]
+    select: ["enter"]
+    done: ["d"]
+    refresh: ["r"]
