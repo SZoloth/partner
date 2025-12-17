@@ -7,11 +7,13 @@ import (
 	"time"
 
 	"github.com/szoloth/partner/internal/claude"
+	cosstate "github.com/szoloth/partner/internal/cos"
 	"github.com/szoloth/partner/internal/mcp"
 	"github.com/szoloth/partner/internal/mcp/providers"
 	"github.com/szoloth/partner/internal/mcp/transport"
 	"github.com/szoloth/partner/internal/panes"
 	"github.com/szoloth/partner/internal/panes/calendar"
+	cospane "github.com/szoloth/partner/internal/panes/cos"
 	"github.com/szoloth/partner/internal/panes/tasks"
 	"github.com/szoloth/partner/internal/theme"
 
@@ -60,6 +62,9 @@ type Model struct {
 	thingsProvider   *providers.ThingsProvider
 	calendarProvider providers.CalendarProviderInterface
 
+	// CoS provider (local state file)
+	cosProvider *cosstate.Provider
+
 	// Global state
 	width             int
 	height            int
@@ -90,6 +95,7 @@ func NewModel(opts ...Option) *Model {
 		styles:        theme.NewStyles(),
 		initialPane:   panes.PaneTasks,
 		claudeClient:  claude.NewClient(),
+		cosProvider:   cosstate.NewProvider(),
 	}
 
 	for _, opt := range opts {
@@ -136,6 +142,10 @@ thingsTransport, err := transport.NewStdioTransport("/Users/samuelz/partner/scri
 		calendarPane := calendar.New(m.calendarProvider)
 		m.paneInstances[panes.PaneCalendar] = calendarPane
 
+		// Create CoS pane (no MCP required - uses local state file)
+		cosPane := cospane.New()
+		m.paneInstances[panes.PaneCoS] = cosPane
+
 		// Start with tasks focused
 		m.activePanes = []panes.Pane{tasksPane.Focus().(panes.Pane)}
 
@@ -175,6 +185,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		// Pane number shortcuts (direct, no modifier needed)
+		case "0":
+			return m, m.switchToPane(panes.PaneCoS) // Chief of Staff - primary pane
 		case "1":
 			return m, m.switchToPane(panes.PaneTasks)
 		case "2":
@@ -286,6 +298,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Update in active panes too
 			for i, ap := range m.activePanes {
 				if ap.Type() == panes.PaneCalendar {
+					m.activePanes[i] = updated.(panes.Pane)
+				}
+			}
+			cmds = append(cmds, cmd)
+		}
+
+	case cospane.StateLoadedMsg, cospane.ActionExecutedMsg:
+		if pane, ok := m.paneInstances[panes.PaneCoS]; ok {
+			updated, cmd := pane.Update(msg)
+			m.paneInstances[panes.PaneCoS] = updated.(panes.Pane)
+			// Update in active panes too
+			for i, ap := range m.activePanes {
+				if ap.Type() == panes.PaneCoS {
 					m.activePanes[i] = updated.(panes.Pane)
 				}
 			}
@@ -487,7 +512,7 @@ func (m *Model) renderPaneBox(p panes.Pane, width, height int, focused bool) str
 }
 
 func (m *Model) renderHelpLine() string {
-	help := "q:quit  tab:focus  \\:split  1-6:panes  ^wo:maximize  a:ai"
+	help := "q:quit  tab:focus  \\:split  0:cos  1-6:panes  ^wo:maximize  a:ai"
 	return m.styles.Muted.Render("  " + help)
 }
 
@@ -807,6 +832,9 @@ func (m *Model) triggerAIAssist() tea.Cmd {
 		var paneContext string
 		var prompt string
 
+		// Always include CoS context for enhanced intelligence
+		cosContext := m.buildCoSContext()
+
 		if len(m.activePanes) > 0 && m.focusedPane < len(m.activePanes) {
 			currentPane := m.activePanes[m.focusedPane]
 
@@ -823,7 +851,7 @@ func (m *Model) triggerAIAssist() tea.Cmd {
 						paneContext = "Today's tasks:\n- " + strings.Join(taskList, "\n- ")
 					}
 				}
-				prompt = "Based on my tasks for today, what's the single highest-leverage needle-mover I should focus on? Be brief (2-3 sentences)."
+				prompt = "Based on my tasks and CoS context, what's the single highest-leverage needle-mover I should focus on? Be brief (2-3 sentences). Prioritize job search actions if outreach is cold."
 
 			case panes.PaneCalendar:
 				// Get calendar events for context
@@ -837,17 +865,28 @@ func (m *Model) triggerAIAssist() tea.Cmd {
 						paneContext = "Today's schedule:\n- " + strings.Join(eventList, "\n- ")
 					}
 				}
-				prompt = "Looking at my schedule, what should I be aware of? Any conflicts or prep needed? Be brief."
+				prompt = "Looking at my schedule and CoS context, what should I be aware of? Any conflicts, prep needed, or avoidance patterns? Be brief."
+
+			case panes.PaneCoS:
+				// CoS pane - full coaching mode
+				paneContext = "" // CoS context already included
+				prompt = "You're my Chief of Staff. Based on my current state, what's the ONE thing I should do right now? If avoidance detected, call it out directly. Be brief but firm."
 
 			default:
 				prompt = "What's the most important thing I should focus on right now?"
 			}
 		}
 
+		// Combine contexts
+		fullContext := cosContext
+		if paneContext != "" {
+			fullContext += "\n\n" + paneContext
+		}
+
 		// Ask Claude
 		resp := m.claudeClient.Ask(ctx, claude.Request{
 			Prompt:     prompt,
-			Context:    paneContext,
+			Context:    fullContext,
 			AllowTools: false,
 		})
 
@@ -859,6 +898,50 @@ func (m *Model) triggerAIAssist() tea.Cmd {
 			Usage:     resp.Usage,
 		}
 	}
+}
+
+// buildCoSContext creates context string from CoS state
+func (m *Model) buildCoSContext() string {
+	if m.cosProvider == nil {
+		return ""
+	}
+
+	state, err := m.cosProvider.Load()
+	if err != nil {
+		return ""
+	}
+
+	var parts []string
+	parts = append(parts, "=== Chief of Staff Context ===")
+
+	// Needle mover
+	if len(state.ActionQueue.Pending) > 0 {
+		needle := state.ActionQueue.Pending[0]
+		parts = append(parts, fmt.Sprintf("Needle-mover: %s - %s (%s)", needle.Type, needle.Company, needle.Contact))
+		if needle.DraftPath != "" {
+			parts = append(parts, fmt.Sprintf("Draft ready: %s", needle.DraftPath))
+		}
+	} else {
+		parts = append(parts, "Needle-mover: NONE SET (action needed)")
+	}
+
+	// Streaks
+	outreach := state.Streaks.Outreach
+	parts = append(parts, fmt.Sprintf("Outreach: %d/%d this week", outreach.CurrentWeek, outreach.WeeklyTarget))
+
+	nm := state.Streaks.NeedleMover
+	parts = append(parts, fmt.Sprintf("Needle-mover streak: %d days (last: %s)", nm.Current, nm.LastCompleted))
+
+	// Alerts
+	if state.Patterns.AvoidanceFlags > 0 {
+		parts = append(parts, "ALERT: Avoidance pattern detected - lots of planning, no shipping")
+	}
+
+	if outreach.CurrentWeek == 0 {
+		parts = append(parts, fmt.Sprintf("ALERT: Outreach cold - %d+ days without sending", state.Thresholds.OutreachColdDays))
+	}
+
+	return strings.Join(parts, "\n")
 }
 
 // executeAIAction executes a suggested action from Claude

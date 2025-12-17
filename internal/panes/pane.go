@@ -12,6 +12,7 @@ const (
 	PaneKnowledge
 	PaneCRM
 	PaneProjects
+	PaneCoS // Chief of Staff pane
 )
 
 // String returns the pane name
@@ -29,6 +30,8 @@ func (p PaneType) String() string {
 		return "crm"
 	case PaneProjects:
 		return "projects"
+	case PaneCoS:
+		return "cos"
 	default:
 		return "unknown"
 	}
@@ -49,6 +52,8 @@ func ParsePaneType(s string) PaneType {
 		return PaneCRM
 	case "projects":
 		return PaneProjects
+	case "cos":
+		return PaneCoS
 	default:
 		return PaneTasks
 	}
