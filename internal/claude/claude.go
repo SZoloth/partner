@@ -98,15 +98,7 @@ func (c *Client) Ask(ctx context.Context, req Request) Response {
 		fullPrompt = fmt.Sprintf("Context:\n%s\n\nRequest:\n%s", req.Context, req.Prompt)
 	}
 
-	// Build args with JSON output for structured parsing
-	args := []string{"-p", fullPrompt, "--output-format", "json"}
-
-	// Use existing session for context persistence (unless new session requested)
-	if c.sessionID != "" && !req.NewSession {
-		args = append(args, "--session-id", c.sessionID)
-	}
-
-	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd := exec.CommandContext(ctx, "claude", buildArgs(fullPrompt, req, c.sessionID)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -153,6 +145,27 @@ func (c *Client) Ask(ctx context.Context, req Request) Response {
 			DurationMs:   cliResp.DurationMs,
 		},
 	}
+}
+
+// noMCPConfig is an empty MCP server list, used with --strict-mcp-config so
+// no user or project MCP servers load when tools are off.
+const noMCPConfig = `{"mcpServers":{}}`
+
+// buildArgs returns the claude CLI arguments for a request. Unless the
+// request allows tools, built-in tools and MCP servers are disabled.
+func buildArgs(fullPrompt string, req Request, sessionID string) []string {
+	args := []string{"-p", fullPrompt, "--output-format", "json"}
+
+	if !req.AllowTools {
+		args = append(args, "--tools", "", "--strict-mcp-config", "--mcp-config", noMCPConfig)
+	}
+
+	// Use existing session for context persistence (unless new session requested)
+	if sessionID != "" && !req.NewSession {
+		args = append(args, "--session-id", sessionID)
+	}
+
+	return args
 }
 
 // Continue sends a follow-up message in the existing session
